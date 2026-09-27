@@ -45,30 +45,19 @@ func resolveProject(u Update, p Pane) string {
 	return "default"
 }
 
-func baseData(u Update, p Pane) map[string]any {
-	project := resolveProject(u, p)
-	title := fmt.Sprintf("[%s]", project)
-	if p.CWD != "" {
-		base := filepath.Base(p.CWD)
-		if base != "." && base != "/" && base != project {
-			title = fmt.Sprintf("[%s] %s", project, base)
-		}
-	}
-	return map[string]any{
-		"app":              "Herdr",
-		"title":            title,
-		"machine_id":       u.Machine.ID,
-		"machine":          u.Machine.Label,
-		"session":          u.Machine.Session,
-		"workspace_id":     p.Workspace,
-		"project":          project,
-		"tab_id":           p.Tab,
-		"pane_id":          p.ID,
-		"terminal_id":      p.Terminal,
-		"cwd":              p.CWD,
-		"foreground_cwd":   p.ForegroundCWD,
-		"connection_epoch": u.Epoch,
-	}
+type FocusedInfo struct {
+	WorkspaceID    string `json:"workspace_id"`
+	TabID          string `json:"tab_id"`
+	PaneID         string `json:"pane_id"`
+	TerminalID     string `json:"terminal_id"`
+	Project        string `json:"project"`
+	CWD            string `json:"cwd"`
+	ForegroundCWD  string `json:"foreground_cwd"`
+	Agent          string `json:"agent,omitempty"`
+	Status         string `json:"status,omitempty"`
+	ExecutionMode  string `json:"execution_mode,omitempty"`
+	SelectionEpoch string `json:"selection_epoch,omitempty"`
+	Scope          string `json:"scope,omitempty"`
 }
 
 type AgentInfo struct {
@@ -86,14 +75,50 @@ type AgentInfo struct {
 	IsTerminal    bool   `json:"is_terminal"`
 }
 
-func agentRecords(host string, u Update) []Record {
-	var items []AgentInfo
+func statusRecord(host string, u Update, localSelected bool, focusEpoch string) (Record, bool) {
+	if len(u.Snapshot.Panes) == 0 {
+		return Record{}, false
+	}
+
+	var focusedInfo *FocusedInfo
+	var focusedPaneID string
+	if localSelected && u.Snapshot.FocusedPane != "" {
+		for _, p := range u.Snapshot.Panes {
+			if p.ID == u.Snapshot.FocusedPane {
+				focusedPaneID = p.ID
+				terminal := p.Terminal
+				if terminal == "" {
+					terminal = p.ID
+				}
+				execMode := ""
+				if p.Agent != "" {
+					execMode = "supervised"
+				}
+				focusedInfo = &FocusedInfo{
+					WorkspaceID:    p.Workspace,
+					TabID:          p.Tab,
+					PaneID:         p.ID,
+					TerminalID:     terminal,
+					Project:        resolveProject(u, p),
+					CWD:            p.CWD,
+					ForegroundCWD:  p.ForegroundCWD,
+					Agent:          p.Agent,
+					Status:         p.Status,
+					ExecutionMode:  execMode,
+					SelectionEpoch: focusEpoch,
+					Scope:          "machine-selection-and-server-focus",
+				}
+				break
+			}
+		}
+	}
+
+	agents := make([]AgentInfo, 0)
 	for _, p := range u.Snapshot.Panes {
 		if p.Agent == "" {
 			continue
 		}
-		project := resolveProject(u, p)
-		isFocused := (p.ID == u.Snapshot.FocusedPane)
+		isFocused := (localSelected && p.ID == focusedPaneID)
 		execMode := "autonomous"
 		if isFocused {
 			execMode = "supervised"
@@ -105,10 +130,10 @@ func agentRecords(host string, u Update) []Record {
 			terminal = p.ID
 		}
 
-		items = append(items, AgentInfo{
+		agents = append(agents, AgentInfo{
 			Agent:         p.Agent,
 			Status:        p.Status,
-			Project:       project,
+			Project:       resolveProject(u, p),
 			WorkspaceID:   p.Workspace,
 			TabID:         p.Tab,
 			PaneID:        p.ID,
@@ -121,18 +146,14 @@ func agentRecords(host string, u Update) []Record {
 		})
 	}
 
-	if len(items) == 0 {
-		return nil
-	}
-
 	// Deterministic sorting by PaneID to ensure reproducible JSON serialization.
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].PaneID < items[j].PaneID
+	sort.Slice(agents, func(i, j int) bool {
+		return agents[i].PaneID < agents[j].PaneID
 	})
 
 	workingCount := 0
 	blockedCount := 0
-	for _, it := range items {
+	for _, it := range agents {
 		if it.Status == "working" {
 			workingCount++
 		} else if it.Status == "blocked" {
@@ -140,57 +161,84 @@ func agentRecords(host string, u Update) []Record {
 		}
 	}
 
-	var title string
-	if len(items) == 1 {
-		title = fmt.Sprintf("%s: %s [%s]", items[0].Agent, items[0].Status, items[0].Project)
-	} else {
-		var parts []string
-		for _, it := range items {
-			parts = append(parts, fmt.Sprintf("%s (%s)", it.Agent, it.Status))
+	dominantState := "idle"
+	if workingCount > 0 {
+		dominantState = "working"
+	} else if blockedCount > 0 {
+		dominantState = "blocked"
+	}
+
+	interaction := "manual"
+	if focusedInfo != nil && focusedInfo.Agent != "" {
+		interaction = "supervised"
+	} else if workingCount > 0 || blockedCount > 0 {
+		interaction = "autonomous"
+	}
+
+	primaryProject := "default"
+	if focusedInfo != nil && focusedInfo.Project != "" && focusedInfo.Project != "default" {
+		primaryProject = focusedInfo.Project
+	} else if len(agents) > 0 {
+		for _, a := range agents {
+			if a.Status == "working" && a.Project != "" && a.Project != "default" {
+				primaryProject = a.Project
+				break
+			}
 		}
-		title = fmt.Sprintf("%d agents: %s", len(items), strings.Join(parts, ", "))
+		if primaryProject == "default" && agents[0].Project != "" {
+			primaryProject = agents[0].Project
+		}
+	}
+
+	primaryAgent := ""
+	if focusedInfo != nil && focusedInfo.Agent != "" {
+		primaryAgent = focusedInfo.Agent
+	} else if len(agents) > 0 {
+		for _, a := range agents {
+			if a.Status == "working" {
+				primaryAgent = a.Agent
+				break
+			}
+		}
+		if primaryAgent == "" {
+			primaryAgent = agents[0].Agent
+		}
+	}
+
+	title := fmt.Sprintf("[%s] %s (%s)", primaryProject, dominantState, interaction)
+
+	var focusedData any
+	if focusedInfo != nil {
+		focusedData = focusedInfo
 	}
 
 	d := map[string]any{
 		"app":              "Herdr",
 		"title":            title,
+		"project":          primaryProject,
+		"primary_project":  primaryProject,
+		"primary_agent":    primaryAgent,
+		"dominant_state":   dominantState,
+		"interaction":      interaction,
 		"machine_id":       u.Machine.ID,
 		"machine":          u.Machine.Label,
 		"session":          u.Machine.Session,
-		"active_count":     len(items),
+		"active_count":     len(agents),
 		"working_count":    workingCount,
 		"blocked_count":    blockedCount,
-		"agents":           items,
+		"agents":           agents,
+		"focused":          focusedData,
 		"connection_epoch": u.Epoch,
 	}
 
-	bucket := "aw-watcher-herdr-agent_" + host
-	name := fmt.Sprintf("Herdr Agents (%s)", host)
-	return []Record{{
+	bucket := "aw-watcher-herdr_" + host
+	name := fmt.Sprintf("Herdr (%s)", host)
+	return Record{
 		Bucket: bucket,
-		Type:   "herdr.agent.status",
+		Type:   "herdr.status",
 		Data:   d,
 		Name:   name,
-	}}
-}
-
-func focusRecord(host string, u Update, epoch string) (Record, bool) {
-	for _, p := range u.Snapshot.Panes {
-		if p.ID == u.Snapshot.FocusedPane {
-			d := baseData(u, p)
-			d["scope"] = "machine-selection-and-server-focus"
-			d["selection_epoch"] = epoch
-			bucket := "aw-watcher-herdr-focus_" + host
-			name := "Herdr Focus (" + host + ")"
-			return Record{
-				Bucket: bucket,
-				Type:   "herdr.focus",
-				Data:   d,
-				Name:   name,
-			}, true
-		}
-	}
-	return Record{}, false
+	}, true
 }
 
 type sent struct {

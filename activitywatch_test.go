@@ -73,34 +73,43 @@ func TestHeartbeatAndFailureGap(t *testing.T) {
 		t.Fatal("heartbeat must not predict future duration")
 	}
 }
-func TestAggregatedAgentBucketAndFocusScope(t *testing.T) {
+func TestSingleBucketPerHostAndInteractions(t *testing.T) {
 	u := Update{Machine: Machine{ID: "m", Label: "remote", Session: "default"}, Epoch: "connected", Snapshot: Snapshot{FocusedPane: "w1:p1", Panes: []Pane{{ID: "w1:p1", Terminal: "t1", Agent: "codex", Status: "working"}, {ID: "w1:p2", Terminal: "t2", Agent: "codex", Status: "idle"}}}}
-	records := agentRecords("host", u)
-	if len(records) != 1 {
-		t.Fatalf("expected 1 aggregated agent record, got %d", len(records))
+	rec, ok := statusRecord("host", u, true, "selection")
+	if !ok {
+		t.Fatal("expected status record")
 	}
-	if records[0].Bucket != "aw-watcher-herdr-agent_host" {
-		t.Fatalf("expected bucket 'aw-watcher-herdr-agent_host', got %q", records[0].Bucket)
+	if rec.Bucket != "aw-watcher-herdr_host" {
+		t.Fatalf("expected bucket 'aw-watcher-herdr_host', got %q", rec.Bucket)
 	}
-	if records[0].Data["active_count"] != 2 {
-		t.Fatalf("expected active_count=2, got %v", records[0].Data["active_count"])
+	if rec.Type != "herdr.status" {
+		t.Fatalf("expected type 'herdr.status', got %q", rec.Type)
 	}
-	otherHostRecords := agentRecords("other-host", u)
-	if otherHostRecords[0].Bucket != "aw-watcher-herdr-agent_other-host" {
-		t.Fatalf("expected bucket 'aw-watcher-herdr-agent_other-host', got %q", otherHostRecords[0].Bucket)
+	if rec.Data["active_count"] != 2 {
+		t.Fatalf("expected active_count=2, got %v", rec.Data["active_count"])
 	}
-	if otherHostRecords[0].Bucket == records[0].Bucket {
+	if rec.Data["interaction"] != "supervised" {
+		t.Fatalf("expected supervised interaction, got %v", rec.Data["interaction"])
+	}
+	if rec.Data["dominant_state"] != "working" {
+		t.Fatalf("expected working dominant_state, got %v", rec.Data["dominant_state"])
+	}
+
+	// Test remote selection suppresses focus, transitions to autonomous
+	remoteRec, ok := statusRecord("host", u, false, "")
+	if !ok {
+		t.Fatal("expected status record")
+	}
+	if remoteRec.Data["interaction"] != "autonomous" {
+		t.Fatalf("expected autonomous interaction when not localSelected, got %v", remoteRec.Data["interaction"])
+	}
+	if remoteRec.Data["focused"] != nil {
+		t.Fatalf("expected nil focused info when not localSelected, got %v", remoteRec.Data["focused"])
+	}
+
+	otherHostRec, _ := statusRecord("other-host", u, true, "selection")
+	if otherHostRec.Bucket == rec.Bucket {
 		t.Fatal("different hosts should not share a bucket")
-	}
-	focus, ok := focusRecord("host", u, "selection")
-	if !ok || focus.Data["scope"] != "machine-selection-and-server-focus" {
-		t.Fatal("wrong focus scope")
-	}
-	if focus.Bucket != "aw-watcher-herdr-focus_host" {
-		t.Fatalf("expected bucket 'aw-watcher-herdr-focus_host', got %q", focus.Bucket)
-	}
-	if _, ok := focus.Data["agent"]; ok {
-		t.Fatal("agent transitions should not fragment focus")
 	}
 }
 
@@ -123,44 +132,58 @@ func TestEventSchemaAndOrchestration(t *testing.T) {
 		},
 	}
 
-	focus, ok := focusRecord("myhost", u, "epoch-focus")
+	rec, ok := statusRecord("myhost", u, true, "epoch-focus")
 	if !ok {
-		t.Fatal("expected focus record")
+		t.Fatal("expected status record")
 	}
-	if focus.Name != "Herdr Focus (myhost)" {
-		t.Errorf("expected focus bucket name 'Herdr Focus (myhost)', got %q", focus.Name)
+	if rec.Name != "Herdr (myhost)" {
+		t.Errorf("expected bucket name 'Herdr (myhost)', got %q", rec.Name)
 	}
-	if focus.Bucket != "aw-watcher-herdr-focus_myhost" {
-		t.Errorf("expected focus bucket ID 'aw-watcher-herdr-focus_myhost', got %q", focus.Bucket)
+	if rec.Bucket != "aw-watcher-herdr_myhost" {
+		t.Errorf("expected bucket ID 'aw-watcher-herdr_myhost', got %q", rec.Bucket)
 	}
-	if focus.Data["app"] != "Herdr" {
-		t.Errorf("expected app 'Herdr', got %v", focus.Data["app"])
+	if rec.Type != "herdr.status" {
+		t.Errorf("expected type 'herdr.status', got %q", rec.Type)
 	}
-	if focus.Data["project"] != "awesome-app" {
-		t.Errorf("expected project 'awesome-app', got %v", focus.Data["project"])
+	if rec.Data["app"] != "Herdr" {
+		t.Errorf("expected app 'Herdr', got %v", rec.Data["app"])
 	}
-	if focus.Data["title"] != "[awesome-app] myproject" {
-		t.Errorf("expected title '[awesome-app] myproject', got %v", focus.Data["title"])
+	if rec.Data["project"] != "awesome-app" {
+		t.Errorf("expected project 'awesome-app', got %v", rec.Data["project"])
+	}
+	if rec.Data["primary_project"] != "awesome-app" {
+		t.Errorf("expected primary_project 'awesome-app', got %v", rec.Data["primary_project"])
+	}
+	if rec.Data["primary_agent"] != "codex" {
+		t.Errorf("expected primary_agent 'codex', got %v", rec.Data["primary_agent"])
+	}
+	if rec.Data["dominant_state"] != "working" {
+		t.Errorf("expected dominant_state 'working', got %v", rec.Data["dominant_state"])
+	}
+	if rec.Data["interaction"] != "supervised" {
+		t.Errorf("expected interaction 'supervised', got %v", rec.Data["interaction"])
+	}
+	if rec.Data["title"] != "[awesome-app] working (supervised)" {
+		t.Errorf("expected title '[awesome-app] working (supervised)', got %v", rec.Data["title"])
+	}
+	if rec.Data["active_count"] != 3 {
+		t.Errorf("expected active_count 3, got %v", rec.Data["active_count"])
+	}
+	if rec.Data["working_count"] != 1 {
+		t.Errorf("expected working_count 1, got %v", rec.Data["working_count"])
 	}
 
-	agents := agentRecords("myhost", u)
-	if len(agents) != 1 {
-		t.Fatalf("expected 1 aggregated agent record, got %d", len(agents))
+	// Verify focused node
+	f := rec.Data["focused"].(*FocusedInfo)
+	if f == nil {
+		t.Fatal("expected focused node")
 	}
-	agg := agents[0]
-	if agg.Name != "Herdr Agents (myhost)" {
-		t.Errorf("unexpected bucket name: %q", agg.Name)
+	if f.PaneID != "p1" || f.Agent != "codex" || f.Status != "working" || f.ExecutionMode != "supervised" {
+		t.Errorf("unexpected focused content: %+v", f)
 	}
-	if agg.Bucket != "aw-watcher-herdr-agent_myhost" {
-		t.Errorf("unexpected bucket ID: %q", agg.Bucket)
-	}
-	if agg.Data["active_count"] != 3 {
-		t.Errorf("expected active_count 3, got %v", agg.Data["active_count"])
-	}
-	if agg.Data["working_count"] != 1 {
-		t.Errorf("expected working_count 1, got %v", agg.Data["working_count"])
-	}
-	items := agg.Data["agents"].([]AgentInfo)
+
+	// Verify agents array
+	items := rec.Data["agents"].([]AgentInfo)
 	if len(items) != 3 {
 		t.Fatalf("expected 3 items in agents, got %d", len(items))
 	}
@@ -216,10 +239,10 @@ func TestEventSchemaAndOrchestration(t *testing.T) {
 	c := testConfig()
 	c.AW = server.URL
 	writer := newWriter(c, nil)
-	if err := writer.Emit(context.Background(), agg, time.Now()); err != nil {
+	if err := writer.Emit(context.Background(), rec, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if createdBody["name"] != "Herdr Agents (myhost)" {
+	if createdBody["name"] != "Herdr (myhost)" {
 		t.Errorf("expected bucket creation body to include name, got: %v", createdBody)
 	}
 }

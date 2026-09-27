@@ -13,11 +13,11 @@ import (
 	"time"
 )
 
-func TestRunWritesAgentAndFocusAndStops(t *testing.T) {
+func TestRunWritesStatusAndStops(t *testing.T) {
 	f := fixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	types := make(chan string)
+	events := make(chan Event, 10)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/heartbeat") {
 			var e Event
@@ -29,12 +29,8 @@ func TestRunWritesAgentAndFocusAndStops(t *testing.T) {
 			if e.Data["machine_id"] != "local" {
 				t.Errorf("unexpected source %v", e.Data)
 			}
-			kind := "agent"
-			if _, ok := e.Data["scope"]; ok {
-				kind = "focus"
-			}
 			select {
-			case types <- kind:
+			case events <- e:
 			case <-ctx.Done():
 			}
 		}
@@ -50,9 +46,9 @@ func TestRunWritesAgentAndFocusAndStops(t *testing.T) {
 	done := make(chan error)
 	go func() { done <- run(ctx, c) }()
 	<-f.subscribed
-	found := map[string]bool{}
-	for len(found) < 2 {
-		found[<-types] = true
+	e := <-events
+	if e.Data["app"] != "Herdr" {
+		t.Errorf("expected app Herdr, got %v", e.Data["app"])
 	}
 	cancel()
 	if err := <-done; err != nil {
@@ -71,7 +67,7 @@ func TestRemoteSelectionSkipsFocusAndResumeStartsNewInterval(t *testing.T) {
 	firstEpoch := p.focusEpoch
 	output.Reset()
 	// A saved remote machine is metadata only: it suppresses local focus and is
-	// never turned into a source. Local background agents continue reporting.
+	// never turned into a source. Local background agents continue reporting as autonomous.
 	p.selectMachine(Catalog{Machines: []Machine{{ID: "remote", Enabled: true, Selected: true}}}, now.Add(time.Second))
 	p.state.At = now.Add(time.Second)
 	p.publish(context.Background())
@@ -83,11 +79,17 @@ func TestRemoteSelectionSkipsFocusAndResumeStartsNewInterval(t *testing.T) {
 	if err := dec.Decode(&record); err != nil {
 		t.Fatal(err)
 	}
-	if record.Type != "herdr.agent.status" || record.Data["machine_id"] != "local" {
+	if record.Type != "herdr.status" || record.Data["machine_id"] != "local" {
 		t.Fatalf("unexpected record: %+v", record)
 	}
+	if record.Data["interaction"] != "autonomous" {
+		t.Fatalf("expected autonomous interaction when remote is selected, got %v", record.Data["interaction"])
+	}
+	if record.Data["focused"] != nil {
+		t.Fatalf("expected nil focused pane when remote is selected, got %v", record.Data["focused"])
+	}
 	if strings.Count(output.String(), "\n") != 1 {
-		t.Fatal("remote selection emitted local focus")
+		t.Fatal("remote selection emitted extra events")
 	}
 	p.selectMachine(Catalog{Err: errors.New("catalog unavailable")}, now.Add(2*time.Second))
 	if p.localSelected {
@@ -100,8 +102,8 @@ func TestRemoteSelectionSkipsFocusAndResumeStartsNewInterval(t *testing.T) {
 	if p.focusEpoch == firstEpoch {
 		t.Fatal("returning from remote selection reused the old interval")
 	}
-	if !strings.Contains(output.String(), `"type":"herdr.focus"`) {
-		t.Fatal("local focus did not resume")
+	if !strings.Contains(output.String(), `"interaction":"supervised"`) {
+		t.Fatal("local focus did not resume as supervised")
 	}
 }
 

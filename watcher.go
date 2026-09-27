@@ -314,18 +314,16 @@ func (p *collector) publish(ctx context.Context) {
 	if !u.Online {
 		return
 	}
-	for _, r := range agentRecords(p.writer.config.Host, u) {
-		if err := p.writer.Emit(ctx, r, u.At); err != nil {
-			slog.Warn("ActivityWatch write failed", "bucket", r.Bucket, "error", err)
-		}
-	}
-	if !p.localSelected {
+	r, ok := statusRecord(p.writer.config.Host, u, p.localSelected, p.focusEpoch)
+	if !ok {
 		return
 	}
-	if r, ok := focusRecord(p.writer.config.Host, u, p.focusEpoch); ok {
-		if err := p.writer.Emit(ctx, r, maxTime(u.At, p.selectionAt)); err != nil {
-			slog.Warn("ActivityWatch write failed", "bucket", r.Bucket, "error", err)
-		}
+	emitAt := u.At
+	if p.localSelected {
+		emitAt = maxTime(u.At, p.selectionAt)
+	}
+	if err := p.writer.Emit(ctx, r, emitAt); err != nil {
+		slog.Warn("ActivityWatch write failed", "bucket", r.Bucket, "error", err)
 	}
 }
 func run(ctx context.Context, c Config) error {
