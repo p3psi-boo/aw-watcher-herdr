@@ -4,7 +4,7 @@
 
 程序只访问本地 Herdr，不建立 SSH 连接，也不采集远程机器的状态。选中远程机器时，程序暂停本地焦点记录，本地后台 agent 的状态记录继续。
 
-从源码构建后，按下文设置时间参数即可运行。记录默认写入 ActivityWatch；加上 `--dry-run` 后，记录改为输出到终端。程序不发送终端输入，不修改 Herdr 配置，也不启动或停止 Herdr 服务。
+从源码构建后，执行 `./aw-watcher-herdr` 即可运行，无需填写时间参数。记录默认写入 ActivityWatch；加上 `--dry-run` 后，记录改为输出到终端。程序不发送终端输入，不修改 Herdr 配置，也不启动或停止 Herdr 服务。
 
 ## 构建和运行需要准备本地依赖。
 
@@ -18,6 +18,8 @@
 - 本地 Herdr 命令行程序须提供 `herdr machine list --json`，用于查询当前选中的机器。
 - 写入记录时需要运行 ActivityWatch；`--dry-run` 模式不访问 ActivityWatch。
 
+启动时若找不到 Herdr 可执行文件，程序会退出并提示安装 Herdr 或设置 `--herdr`。Herdr 已安装但服务器尚未启动时，程序会按重连间隔继续等待。
+
 本项目已在本机 Herdr 0.9.0 上验证接口。程序不依赖该版本缺少的全局 `--machine` 参数。
 
 在项目目录执行以下命令，构建程序、运行检查并查看参数说明：
@@ -26,35 +28,41 @@
 go build -o aw-watcher-herdr .
 go test -race ./...
 go vet ./...
+./aw-watcher-herdr doctor
 ./aw-watcher-herdr --help
 ```
 
-## 启动前需要明确设置时间参数。
+执行 `./aw-watcher-herdr doctor` 可一键体检本地运行环境，依次检查 Herdr CLI 可用性、Unix socket 响应与工作区状态、ActivityWatch API 连通性及后台守护服务安装情况。
+
+## 程序使用默认参数即可启动。
+
+直接运行程序，将记录写入本地 ActivityWatch：
+
+```sh
+./aw-watcher-herdr
+```
+
+首次运行时可以使用 `./aw-watcher-herdr --dry-run`，只在终端查看记录，不访问 ActivityWatch。两种模式都只对本地 Herdr 执行查询和订阅。
 
 程序通过 heartbeat 向 ActivityWatch 报告持续状态。Heartbeat 是带时间的状态记录；ActivityWatch 可以将时间相邻且数据相同的记录合并为一个区间。
 
-所有时间参数均为必填项，值须大于零，没有默认值。参数采用 Go duration 格式，即数字后接时间单位，例如 `ms`、`s` 或 `m`。运行者需要自行确定时间值，测试代码中的数值不作为运行默认值。
+所有时间参数均为可选项。覆盖默认值时使用 Go duration 格式，即数字后接时间单位，例如 `ms`、`s` 或 `m`，值须大于零。
 
-| 参数 | 参数的作用和约束 |
-|---|---|
-| `--selection-interval` | 程序完成一次机器列表查询后，等待这段时间再查询。两次查询之间的短暂切换可能未被记录。 |
-| `--heartbeat-interval` | 程序按此间隔检查本地服务器并刷新状态。数据没有变化时，两次报告至少间隔这段时间。 |
-| `--pulsetime` | ActivityWatch 使用此时间窗口合并相邻的相同记录。值须不小于 `--heartbeat-interval`，否则正常报告也可能被分成不同区间。 |
-| `--retry-interval` | 本地 Herdr 连接失败后，程序等待这段时间再重连。 |
-| `--timeout` | 单次 HTTP 请求、本地 Herdr 请求和机器列表查询使用此超时。 |
+| 参数 | 默认值 | 参数的作用和约束 |
+|---|---|---|
+| `--selection-interval` | `1s` | 程序完成一次机器列表查询后，等待这段时间再查询。两次查询之间的短暂切换可能未被记录。 |
+| `--heartbeat-interval` | `1s` | 程序按此间隔检查本地服务器并刷新状态。数据没有变化时，两次报告至少间隔这段时间；事件变化仍即时处理。 |
+| `--pulsetime` | 自动计算，默认报告间隔下为 `2s` | ActivityWatch 使用此时间窗口合并相邻的相同记录。未指定时取 `max(报告间隔 × 1.5, 报告间隔 + 1s)`；显式指定时须不小于报告间隔。 |
+| `--retry-interval` | `10s` | 本地 Herdr 连接失败后，程序等待这段时间再重连。 |
+| `--timeout` | `5s` | 单次 HTTP 请求、本地 Herdr 请求和机器列表查询使用此超时；不限制已建立的事件订阅持续时间。 |
 
-设置下列环境变量后，执行启动命令。命令中的变量只用于向程序传入参数；变量未设置或为空时，shell 会提示缺少的值。
+查询、报告和重连间隔参考 ActivityWatch 官方实现，合并窗口沿用[官方窗口 watcher 的计算方式](https://github.com/ActivityWatch/aw-watcher-window/blob/master/aw_watcher_window/main.py)。请求超时是本项目选定的可覆盖默认值，不代表接口保证的响应时间。
+
+只需传入要修改的参数。例如，以下命令将报告间隔改为 `5s`，合并窗口自动调整为 `7.5s`，其余参数保持默认值：
 
 ```sh
-./aw-watcher-herdr \
-  --selection-interval "${SELECTION_INTERVAL:?请设置机器选择查询间隔}" \
-  --heartbeat-interval "${HEARTBEAT_INTERVAL:?请设置状态检查与报告间隔}" \
-  --pulsetime "${PULSETIME:?请设置ActivityWatch合并窗口}" \
-  --retry-interval "${RETRY_INTERVAL:?请设置重连间隔}" \
-  --timeout "${REQUEST_TIMEOUT:?请设置请求超时}"
+./aw-watcher-herdr --heartbeat-interval 5s
 ```
-
-首次运行时，在命令末尾加上 `--dry-run`。检查终端输出中的来源、目录和状态，确认后去掉该参数，开始写入 ActivityWatch。两种模式都只对本地 Herdr 执行查询和订阅。
 
 其余参数均为可选项：
 
@@ -65,6 +73,21 @@ go vet ./...
 | `--herdr` | 指定本地 Herdr 可执行文件，默认从 `PATH` 查找 `herdr`。 |
 | `--hostname` | 指定采集端身份，默认使用操作系统返回的主机名。该值参与 ActivityWatch 记录集合的命名。 |
 | `--dry-run` | 默认关闭。启用后将记录写到标准输出，不访问 ActivityWatch。 |
+
+### macOS 和 Linux 使用相同的 Herdr socket 目录规则。
+
+Herdr 的[官方配置文档](https://herdr.dev/docs/configuration/#config-file)将 macOS 和 Linux 的默认配置目录都定义为 `~/.config/herdr`；[Socket API 文档](https://herdr.dev/docs/socket-api/#socket-paths)将默认 socket 放在该目录下。程序不使用 macOS 的 `~/Library/Application Support` 来推导 Herdr socket。
+
+以下用户名 `example` 仅用于展示两种系统的主目录形式：
+
+| 系统 | 未设置路径参数及相关环境变量时的 socket 路径 |
+|---|---|
+| macOS | `/Users/example/.config/herdr/herdr.sock` |
+| Linux | `/home/example/.config/herdr/herdr.sock` |
+
+两平台的查找优先级均为：`--socket`、`HERDR_SOCKET_PATH`、`$XDG_CONFIG_HOME/herdr/herdr.sock`、`$HOME/.config/herdr/herdr.sock`。程序不会扫描其他目录或自动改连另一个会话。
+
+命名会话的 socket 位于配置目录下的 `sessions/<name>/herdr.sock`。当前 watcher 不解析 `HERDR_SESSION`；使用命名会话时，通过 `--socket` 或 `HERDR_SOCKET_PATH` 指定路径。后台服务需要单独设置环境变量，不能假定它继承了交互式终端的环境。
 
 ## 程序结合事件订阅和定期查询采集状态。
 
@@ -111,16 +134,22 @@ ActivityWatch 用 bucket 保存同类事件，每个 bucket 是一个记录集�
 
 ## 记录按主机和终端身份保存在 ActivityWatch 中。
 
-每个采集主机使用一个焦点 bucket。Agent bucket 按采集主机、机器配置 ID、会话和 terminal ID 分开保存，避免并行 agent 的报告相互打断；缺少 terminal ID 时使用 pane ID。
+每个采集主机使用一个焦点 bucket。Agent bucket 按采集主机、机器配置 ID、会话和 terminal ID 分开保存，避免并行 agent 的报告相互打断；缺少 terminal ID 时使用 pane ID。创建 bucket 时会自动附带可读名称（`name`，如 `Herdr Focus (<host>)` 或 `Herdr Agent: <agent> (<project>)`），便于在 ActivityWatch 界面直观辨识。
 
-程序根据上述身份信息生成完整的 SHA-256 摘要，用于构成 bucket ID。机器、目录和项目等可读信息保存在事件的 `data` 中。
+程序根据上述身份信息生成完整的 SHA-256 摘要，用于构成 bucket ID。机器、目录、状态与项目等可读信息保存在事件的 `data` 中。
 
 | 字段 | 字段的含义 |
 |---|---|
+| `app` | 固定为 `"Herdr"`，适配 ActivityWatch 原生分类与筛选规则。 |
+| `title` | 格式化的可读标题。焦点记录使用 `[<project>] <cwd_base>`；Agent 记录使用 `<agent>: <status> [<project>]`。 |
+| `project` | 优先使用工作区标签；未设置标签时自动回退为当前目录名、工作区 ID 或 `"default"`。 |
+| `workspace_id`、`tab_id`、`pane_id`、`terminal_id` | 标识对应的 Herdr 对象。 |
 | `machine_id`、`machine`、`session` | 标识数据来源和会话。当前仅记录本地来源，`session` 保存本地 socket 路径。 |
-| `workspace_id`、`project`、`tab_id`、`pane_id`、`terminal_id` | 标识对应的 Herdr 对象；`project` 使用工作区标签。 |
 | `cwd`、`foreground_cwd` | 保存 Herdr 返回的目录；前台进程目录可能为空。 |
-| `agent`、`status`、`scope` | Agent 记录包含前两个字段；焦点记录包含 `scope`。 |
+| `agent`、`status` | Agent 记录包含此二者，标识模型名称与当前状态（如 `working`、`blocked`、`done`）。 |
+| `is_focused`、`execution_mode` | Agent 记录专属的协同上下文。`is_focused` 标识该窗格是否为当前用户焦点；`execution_mode` 相应标记为 `"supervised"`（有人注视/监督）或 `"autonomous"`（后台自治运行）。 |
+| `is_terminal` | Agent 记录专属。当状态为 `done`、`exited` 或 `error` 时为 `true`，方便下游统计终态任务。 |
+| `scope` | 焦点记录专属，固定为 `machine-selection-and-server-focus`。 |
 | `connection_epoch`、`selection_epoch`、`delivery_epoch` | 区分不同连接、选择和写入阶段的随机标识，用于避免跨已知中断合并记录。`selection_epoch` 仅出现在焦点记录中。 |
 
 每个 heartbeat 使用采集端的观察时间，并转换为 UTC，即协调世界时。初始时长为零，程序不会预先计入未来时间。状态变化会产生新数据，相邻相同数据由 ActivityWatch 合并。短暂状态的结束时间受报告时机影响，记录不等同于按事件实际发生时刻生成的精确审计日志。
@@ -136,39 +165,71 @@ ActivityWatch 用 bucket 保存同类事件，每个 bucket 是一个记录集�
 | ActivityWatch 写入失败。 | 程序记录错误，在后续报告时再次尝试写入。恢复后使用新的写入标识，不将缺失区间合并为连续活动。 |
 | 程序收到 `SIGINT` 或 `SIGTERM`。 | 程序关闭自己的订阅连接并退出，不删除 Herdr 的 socket。 |
 
-当前实现没有持久化待发送队列，ActivityWatch 写入失败期间的数据可能丢失。重连使用显式配置的固定间隔，没有重试次数上限。程序未另外设置事件数量或内容长度限制，操作系统的接口限制仍然适用。
+当前实现没有持久化待发送队列，ActivityWatch 写入失败期间的数据可能丢失。重连使用固定间隔，默认值可通过参数覆盖，没有重试次数上限。程序未另外设置事件数量或内容长度限制，操作系统的接口限制仍然适用。
 
-## macOS 可通过 LaunchAgent 管理后台进程。
+## 一条命令即可安装用户后台服务。
 
-LaunchAgent 是登录用户的后台任务配置。采集程序本身保持前台运行，由 `launchd` 启动和管理。为避免重复采集，同一采集主机上每个采集端身份只运行一个实例。
+在 macOS 的图形登录会话中，程序使用 LaunchAgent，即登录用户的后台任务配置；在 Linux 中，程序使用 systemd 用户服务。Linux 需要已经运行的 systemd 用户管理器。安装命令不使用 `sudo`，也不修改系统级服务。
 
-配置模板位于 [`examples/org.activitywatch.herdr.plist`](examples/org.activitywatch.herdr.plist)。程序不会自动安装模板。手动配置时按以下步骤操作：
-
-1. 将模板中的可执行文件、socket、日志路径和时间占位符替换为实际值。
-2. 创建日志文件的父目录。
-3. 将填写后的配置保存到 `~/Library/LaunchAgents/org.activitywatch.herdr.plist`。
-4. 校验配置，通过后加载任务并查看状态。
-
-模板没有时间默认值，填写完成后再加载。LaunchAgent 的环境与交互式 shell 不同，因此模板使用本地 Herdr 的绝对路径。
+将构建后的程序放在准备长期保留的位置，再执行：
 
 ```sh
-plutil -lint "$HOME/Library/LaunchAgents/org.activitywatch.herdr.plist"
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/org.activitywatch.herdr.plist"
-launchctl print "gui/$(id -u)/org.activitywatch.herdr"
+./aw-watcher-herdr service install
+./aw-watcher-herdr service status
 ```
 
-停止后台任务时执行：
+安装命令自动生成配置、启用登录启动并启动采集。程序会记录当前 watcher 的绝对路径，从 `PATH` 查找 Herdr，保存已确定的 socket、ActivityWatch 地址、主机名和全部时间参数。配置中的空格和特殊字符由程序处理，不需要编辑 plist 或 systemd 配置文件。
+
+安装只保存 `HOME`、已确定的 `HERDR_SOCKET_PATH`，以及当前设置的 `XDG_CONFIG_HOME` 和 `HERDR_CONFIG_PATH`；不会复制整个终端环境。需要的目录会自动创建，路径与日志位置如下。
+
+| 系统 | 服务配置 | 日志位置 |
+|---|---|---|
+| macOS | `~/Library/LaunchAgents/org.activitywatch.herdr.plist` | `~/Library/Logs/aw-watcher-herdr/stdout.log` 和 `stderr.log`。 |
+| Linux | `$XDG_CONFIG_HOME/systemd/user/aw-watcher-herdr.service`；未设置该变量时使用 `~/.config/systemd/user/aw-watcher-herdr.service`。 | 使用 systemd 日志，执行 `journalctl --user -u aw-watcher-herdr.service` 查看。 |
+
+安装前可以预览完整配置：
 
 ```sh
-launchctl bootout "gui/$(id -u)/org.activitywatch.herdr"
+./aw-watcher-herdr service install --dry-run
 ```
+
+这里的 `--dry-run` 只打印服务配置，不写文件、不调用服务管理器、不启动采集。直接运行 `./aw-watcher-herdr --dry-run` 则会连接 Herdr 并将采集记录打印到终端；两种命令都不向 ActivityWatch 写入记录。
+
+安装时可以传入普通采集参数，只需覆盖要改变的值。例如，以下命令会安装使用不同报告间隔的服务：
+
+```sh
+./aw-watcher-herdr service install --heartbeat-interval 5s
+```
+
+### 服务命令负责启动、停止和卸载。
+
+| 命令 | 命令的行为 |
+|---|---|
+| `./aw-watcher-herdr service status` | 显示服务管理器返回的进程状态，以及配置和日志位置。停止的服务可能返回非零退出码。 |
+| `./aw-watcher-herdr service stop` | 停止采集并禁用登录启动，直到再次执行 `service start`。 |
+| `./aw-watcher-herdr service start` | 启用登录启动并启动已经安装的服务。 |
+| `./aw-watcher-herdr service restart` | 重启正在运行的后台服务（macOS 使用 `kickstart -k`，Linux 使用 `systemctl restart`）。 |
+| `./aw-watcher-herdr service uninstall` | 停止服务，取消登录启动并删除本程序生成的服务配置；保留程序、日志和 ActivityWatch 数据。 |
+
+相同配置重复安装不会覆盖文件或重启进程。修改已安装服务的参数时，先执行 `service uninstall`，再带新参数执行 `service install`，无需手动编辑文件。配置保存后若启动失败，程序会报告错误并保留配置；修复错误后执行 `service start` 重试。
+
+服务配置引用安装时的程序位置，不复制可执行文件。移动 watcher 或 Herdr 后，需要重新安装服务以更新路径。服务管理命令不会安装或启动 Herdr、ActivityWatch，也不会配置 Linux 用户退出登录后继续运行的行为。
+
+### 已有外部服务配置会保持不变。
+
+安装命令遇到同名服务配置、符号链接或已经加载的同名外部服务时会停止操作并说明原因。本程序只管理带有自身生成标记的普通配置文件，不修改 Nix、Home Manager 或其他工具生成的配置。已有服务由这些工具管理时，应继续通过原工具配置，避免重复采集。
+
+每个用户安装一个由本程序管理的服务。安装时保存明确指定或按默认规则确定的单个本地 socket；程序不会扫描其他会话，也不会连接远程机器。启动后台服务前，应结束同一来源的前台采集进程。
 
 ## 测试覆盖协议、记录分离和中断处理。
 
 | 测试文件 | 文件验证的行为 |
 |---|---|
+| [`service_test.go`](service_test.go) | 验证 macOS/Linux 配置生成、参数转义、配置预览、安装和卸载、外部配置保护、服务重启及启动失败后的重试；服务管理器调用使用模拟实现。 |
+| [`main_test.go`](main_test.go) | 验证连接参数默认值、环境变量优先级、显式覆盖、版本查询、帮助命令和缺少 Herdr 可执行文件时的提示。 |
+| [`doctor_test.go`](doctor_test.go) | 验证环境体检（doctor）在双端正常和异常（CLI 缺失、Socket 离线、AW 端口不可达）情况下的诊断与提示。 |
 | [`herdr_test.go`](herdr_test.go) | 使用临时 Unix socket 模拟 Herdr，验证普通请求、事件推送、退出清理、断线重连和焦点更新。 |
-| [`activitywatch_test.go`](activitywatch_test.go) | 使用临时 HTTP 服务验证 bucket 创建、heartbeat、写入失败后的区间分隔，以及并行 agent 和来源身份之间的 bucket 分离。 |
+| [`activitywatch_test.go`](activitywatch_test.go) | 使用临时 HTTP 服务验证 bucket 创建与命名、heartbeat、写入失败后的区间分隔、并行 agent 隔离、字段规范化及人机协同上下文。 |
 | [`watcher_test.go`](watcher_test.go) | 验证采集进程的写入和退出，以及远程选中时跳过焦点、查询失败时暂停焦点、返回 Local 后分开记录的行为。 |
 
 执行以下命令运行测试和静态检查：
@@ -178,7 +239,7 @@ go test -race ./...
 go vet ./...
 ```
 
-测试中的时间数值仅用于构造测试输入，不是运行默认值。
+运行默认值由 `main.go` 定义，并由参数测试验证；其他测试中的时间数值仅用于构造测试输入。
 
 ## 官方文档说明了程序使用的协议。
 

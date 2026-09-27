@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"sync"
 	"time"
 )
@@ -327,6 +329,9 @@ func (p *collector) publish(ctx context.Context) {
 	}
 }
 func run(ctx context.Context, c Config) error {
+	if _, err := exec.LookPath(c.Herdr); err != nil {
+		return fmt.Errorf("Herdr executable %q is unavailable: %w; install Herdr or set --herdr to its executable path", c.Herdr, err)
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	updates := make(chan Update)
