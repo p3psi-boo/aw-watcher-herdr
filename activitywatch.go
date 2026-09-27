@@ -3,8 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,12 +25,6 @@ type Event struct {
 	Timestamp time.Time      `json:"timestamp"`
 	Duration  float64        `json:"duration"`
 	Data      map[string]any `json:"data"`
-}
-
-func identity(parts ...string) string {
-	b, _ := json.Marshal(parts)
-	s := sha256.Sum256(b)
-	return hex.EncodeToString(s[:])
 }
 
 func resolveProject(u Update, p Pane) string {
@@ -172,7 +164,7 @@ func agentRecords(host string, u Update) []Record {
 		"connection_epoch": u.Epoch,
 	}
 
-	bucket := "aw-watcher-herdr-agent_" + identity(host)
+	bucket := "aw-watcher-herdr-agent_" + host
 	name := fmt.Sprintf("Herdr Agents (%s)", host)
 	return []Record{{
 		Bucket: bucket,
@@ -188,7 +180,7 @@ func focusRecord(host string, u Update, epoch string) (Record, bool) {
 			d := baseData(u, p)
 			d["scope"] = "machine-selection-and-server-focus"
 			d["selection_epoch"] = epoch
-			bucket := "aw-watcher-herdr-focus_" + identity(host)
+			bucket := "aw-watcher-herdr-focus_" + host
 			name := "Herdr Focus (" + host + ")"
 			return Record{
 				Bucket: bucket,

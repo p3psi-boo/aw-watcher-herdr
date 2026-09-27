@@ -79,16 +79,25 @@ func TestAggregatedAgentBucketAndFocusScope(t *testing.T) {
 	if len(records) != 1 {
 		t.Fatalf("expected 1 aggregated agent record, got %d", len(records))
 	}
+	if records[0].Bucket != "aw-watcher-herdr-agent_host" {
+		t.Fatalf("expected bucket 'aw-watcher-herdr-agent_host', got %q", records[0].Bucket)
+	}
 	if records[0].Data["active_count"] != 2 {
 		t.Fatalf("expected active_count=2, got %v", records[0].Data["active_count"])
 	}
 	otherHostRecords := agentRecords("other-host", u)
+	if otherHostRecords[0].Bucket != "aw-watcher-herdr-agent_other-host" {
+		t.Fatalf("expected bucket 'aw-watcher-herdr-agent_other-host', got %q", otherHostRecords[0].Bucket)
+	}
 	if otherHostRecords[0].Bucket == records[0].Bucket {
 		t.Fatal("different hosts should not share a bucket")
 	}
 	focus, ok := focusRecord("host", u, "selection")
 	if !ok || focus.Data["scope"] != "machine-selection-and-server-focus" {
 		t.Fatal("wrong focus scope")
+	}
+	if focus.Bucket != "aw-watcher-herdr-focus_host" {
+		t.Fatalf("expected bucket 'aw-watcher-herdr-focus_host', got %q", focus.Bucket)
 	}
 	if _, ok := focus.Data["agent"]; ok {
 		t.Fatal("agent transitions should not fragment focus")
@@ -121,6 +130,9 @@ func TestEventSchemaAndOrchestration(t *testing.T) {
 	if focus.Name != "Herdr Focus (myhost)" {
 		t.Errorf("expected focus bucket name 'Herdr Focus (myhost)', got %q", focus.Name)
 	}
+	if focus.Bucket != "aw-watcher-herdr-focus_myhost" {
+		t.Errorf("expected focus bucket ID 'aw-watcher-herdr-focus_myhost', got %q", focus.Bucket)
+	}
 	if focus.Data["app"] != "Herdr" {
 		t.Errorf("expected app 'Herdr', got %v", focus.Data["app"])
 	}
@@ -138,6 +150,9 @@ func TestEventSchemaAndOrchestration(t *testing.T) {
 	agg := agents[0]
 	if agg.Name != "Herdr Agents (myhost)" {
 		t.Errorf("unexpected bucket name: %q", agg.Name)
+	}
+	if agg.Bucket != "aw-watcher-herdr-agent_myhost" {
+		t.Errorf("unexpected bucket ID: %q", agg.Bucket)
 	}
 	if agg.Data["active_count"] != 3 {
 		t.Errorf("expected active_count 3, got %v", agg.Data["active_count"])

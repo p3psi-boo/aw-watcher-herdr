@@ -71,7 +71,7 @@ go build -o aw-watcher-herdr .
 数据自动上报至 ActivityWatch，每个主机仅维护两个固定的核心 Bucket：
 
 ### 1. 人类焦点记录 (`herdr.focus`)
-* **Bucket 命名**：`aw-watcher-herdr-focus_<hash>`（展示名：`Herdr Focus (<host>)`）
+* **Bucket 命名**：`aw-watcher-herdr-focus_<hostname>`（展示名：`Herdr Focus (<host>)`）
 * **事件载荷示例**：
   ```json
   {
@@ -92,7 +92,7 @@ go build -o aw-watcher-herdr .
   ```
 
 ### 2. AI Agent 聚合记录 (`herdr.agent.status`)
-* **Bucket 命名**：`aw-watcher-herdr-agent_<hash>`（展示名：`Herdr Agents (<host>)`）
+* **Bucket 命名**：`aw-watcher-herdr-agent_<hostname>`（展示名：`Herdr Agents (<host>)`）
 * **事件载荷示例**：
   ```json
   {
