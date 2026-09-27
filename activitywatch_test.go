@@ -73,16 +73,18 @@ func TestHeartbeatAndFailureGap(t *testing.T) {
 		t.Fatal("heartbeat must not predict future duration")
 	}
 }
-func TestIndependentAgentBucketsAndFocusScope(t *testing.T) {
+func TestAggregatedAgentBucketAndFocusScope(t *testing.T) {
 	u := Update{Machine: Machine{ID: "m", Label: "remote", Session: "default"}, Epoch: "connected", Snapshot: Snapshot{FocusedPane: "w1:p1", Panes: []Pane{{ID: "w1:p1", Terminal: "t1", Agent: "codex", Status: "working"}, {ID: "w1:p2", Terminal: "t2", Agent: "codex", Status: "idle"}}}}
 	records := agentRecords("host", u)
-	if len(records) != 2 || records[0].Bucket == records[1].Bucket {
-		t.Fatal("parallel agents share a bucket")
+	if len(records) != 1 {
+		t.Fatalf("expected 1 aggregated agent record, got %d", len(records))
 	}
-	other := u
-	other.Machine.ID = "other"
-	if agentRecords("host", other)[0].Bucket == records[0].Bucket {
-		t.Fatal("machines share a bucket")
+	if records[0].Data["active_count"] != 2 {
+		t.Fatalf("expected active_count=2, got %v", records[0].Data["active_count"])
+	}
+	otherHostRecords := agentRecords("other-host", u)
+	if otherHostRecords[0].Bucket == records[0].Bucket {
+		t.Fatal("different hosts should not share a bucket")
 	}
 	focus, ok := focusRecord("host", u, "selection")
 	if !ok || focus.Data["scope"] != "machine-selection-and-server-focus" {
@@ -130,53 +132,58 @@ func TestEventSchemaAndOrchestration(t *testing.T) {
 	}
 
 	agents := agentRecords("myhost", u)
-	if len(agents) != 3 {
-		t.Fatalf("expected 3 agent records, got %d", len(agents))
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 aggregated agent record, got %d", len(agents))
+	}
+	agg := agents[0]
+	if agg.Name != "Herdr Agents (myhost)" {
+		t.Errorf("unexpected bucket name: %q", agg.Name)
+	}
+	if agg.Data["active_count"] != 3 {
+		t.Errorf("expected active_count 3, got %v", agg.Data["active_count"])
+	}
+	if agg.Data["working_count"] != 1 {
+		t.Errorf("expected working_count 1, got %v", agg.Data["working_count"])
+	}
+	items := agg.Data["agents"].([]AgentInfo)
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items in agents, got %d", len(items))
 	}
 
 	// p1 is focused, working
-	p1 := agents[0]
-	if p1.Data["is_focused"] != true {
+	p1 := items[0]
+	if p1.IsFocused != true {
 		t.Errorf("p1 should be focused")
 	}
-	if p1.Data["execution_mode"] != "supervised" {
-		t.Errorf("p1 execution_mode should be 'supervised', got %v", p1.Data["execution_mode"])
+	if p1.ExecutionMode != "supervised" {
+		t.Errorf("p1 execution_mode should be 'supervised', got %v", p1.ExecutionMode)
 	}
-	if p1.Data["is_terminal"] != false {
-		t.Errorf("p1 is_terminal should be false, got %v", p1.Data["is_terminal"])
+	if p1.IsTerminal != false {
+		t.Errorf("p1 is_terminal should be false, got %v", p1.IsTerminal)
 	}
-	if p1.Data["title"] != "codex: working [awesome-app]" {
-		t.Errorf("unexpected p1 title: %v", p1.Data["title"])
-	}
-	if p1.Name != "Herdr Agent: codex (awesome-app)" {
-		t.Errorf("unexpected p1 bucket name: %q", p1.Name)
+	if p1.Project != "awesome-app" {
+		t.Errorf("expected project awesome-app, got %v", p1.Project)
 	}
 
 	// p2 is background, done (terminal state)
-	p2 := agents[1]
-	if p2.Data["is_focused"] != false {
+	p2 := items[1]
+	if p2.IsFocused != false {
 		t.Errorf("p2 should not be focused")
 	}
-	if p2.Data["execution_mode"] != "autonomous" {
-		t.Errorf("p2 execution_mode should be 'autonomous', got %v", p2.Data["execution_mode"])
+	if p2.ExecutionMode != "autonomous" {
+		t.Errorf("p2 execution_mode should be 'autonomous', got %v", p2.ExecutionMode)
 	}
-	if p2.Data["is_terminal"] != true {
-		t.Errorf("p2 is_terminal should be true, got %v", p2.Data["is_terminal"])
+	if p2.IsTerminal != true {
+		t.Errorf("p2 is_terminal should be true, got %v", p2.IsTerminal)
 	}
-	if p2.Data["project"] != "docs" {
-		t.Errorf("p2 project should fallback to 'docs', got %v", p2.Data["project"])
-	}
-	if p2.Data["title"] != "claude: done [docs]" {
-		t.Errorf("unexpected p2 title: %v", p2.Data["title"])
-	}
-	if p2.Name != "Herdr Agent: claude (docs)" {
-		t.Errorf("unexpected p2 bucket name: %q", p2.Name)
+	if p2.Project != "docs" {
+		t.Errorf("p2 project should fallback to 'docs', got %v", p2.Project)
 	}
 
 	// p3 fallback to workspace ID
-	p3 := agents[2]
-	if p3.Data["project"] != "w3" {
-		t.Errorf("p3 project should fallback to workspace ID 'w3', got %v", p3.Data["project"])
+	p3 := items[2]
+	if p3.Project != "w3" {
+		t.Errorf("p3 project should fallback to workspace ID 'w3', got %v", p3.Project)
 	}
 
 	// Test bucket creation sends Name to ActivityWatch
@@ -194,10 +201,10 @@ func TestEventSchemaAndOrchestration(t *testing.T) {
 	c := testConfig()
 	c.AW = server.URL
 	writer := newWriter(c, nil)
-	if err := writer.Emit(context.Background(), p1, time.Now()); err != nil {
+	if err := writer.Emit(context.Background(), agg, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if createdBody["name"] != "Herdr Agent: codex (awesome-app)" {
+	if createdBody["name"] != "Herdr Agents (myhost)" {
 		t.Errorf("expected bucket creation body to include name, got: %v", createdBody)
 	}
 }

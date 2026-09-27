@@ -54,13 +54,13 @@ go build -o aw-watcher-herdr .
 ## 核心特性 (Key Capabilities)
 
 * **细粒度工作区与项目感知**：通过本地 Unix Socket 监听 Herdr 拓扑事件（`pane_focused`、`tab_focused`、`workspace_focused`），以秒级精度记录项目专注时长。工作区未打标签时，自动回退解析为当前文件目录名（`project` 智能 Fallback）。
-* **并行 AI Agent 独立采集**：为每个终端会话（Terminal ID）维护独立事件流，并发运行的多个 Agent 互不截断、互不串扰，忠实还原模型工作时长。
+* **AI Agent 状态流聚合**：同一主机上的全部并发 Agent 统一汇聚至单一固定的 Agent Bucket 中，杜绝 Bucket 随窗格开闭无休止膨胀；状态变化即时切片，提供宏观的 active / working / blocked 负载统计与明细列表。
 * **人机协同双向标注**：
-  * 在 Agent 事件中自动注入 `is_focused`（是否正处于用户视觉焦点）。
+  * 在 Agent 事件明细中自动注入 `is_focused`（是否正处于用户视觉焦点）。
   * 自动标记 `execution_mode`（`supervised` 人工监督 vs `autonomous` 离线自主执行），下游无需复杂双流 JOIN 即可直接计算 AI 杠杆率。
 * **生态兼容与友好展示**：
   * 自动注入 `app: "Herdr"` 与 `title: "[project] <summary>"`，ActivityWatch 原生分类引擎和时间线直接生效。
-  * Bucket 创建时附带可读名称（如 `Herdr Agent: codex (modelcards)`），告别一长串不可读的哈希 ID。
+  * Bucket 创建时附带固定且语义化的展示名称（`Herdr Focus (<host>)` 与 `Herdr Agents (<host>)`），告别一长串不可读的哈希 ID。
 * **系统级自愈与用户服务管理**：内置 LaunchAgent（macOS）与 systemd（Linux）管理能力，支持服务 `install`、`status`、`restart`、`stop`、`uninstall`。自动处理路径转义，并主动保护 Nix / Home Manager 等外部只读配置。
 * **只读对接与本地隐私边界**：仅通过本地 Socket 读取状态，不向终端发送字符、不采集控制台正文与按键输入、不建立远程 SSH 网络连接。
 
@@ -68,7 +68,7 @@ go build -o aw-watcher-herdr .
 
 ## 数据结构与示例 (Data Schema)
 
-数据自动上报至 ActivityWatch，划分为两个独立的 Bucket 域：
+数据自动上报至 ActivityWatch，每个主机仅维护两个固定的核心 Bucket：
 
 ### 1. 人类焦点记录 (`herdr.focus`)
 * **Bucket 命名**：`aw-watcher-herdr-focus_<hash>`（展示名：`Herdr Focus (<host>)`）
@@ -91,27 +91,49 @@ go build -o aw-watcher-herdr .
   }
   ```
 
-### 2. AI Agent 状态记录 (`herdr.agent.status`)
-* **Bucket 命名**：`aw-watcher-herdr-agent_<hash>`（展示名：`Herdr Agent: <agent> (<project>)`）
+### 2. AI Agent 聚合记录 (`herdr.agent.status`)
+* **Bucket 命名**：`aw-watcher-herdr-agent_<hash>`（展示名：`Herdr Agents (<host>)`）
 * **事件载荷示例**：
   ```json
   {
     "app": "Herdr",
-    "title": "codex: working [modelcards]",
-    "agent": "codex",
-    "status": "working",
-    "is_focused": true,
-    "execution_mode": "supervised",
-    "is_terminal": false,
-    "project": "modelcards",
-    "cwd": "/Users/example/workspaces/modelcards",
+    "title": "2 agents: codex (working), claude (blocked)",
     "machine": "Local",
     "machine_id": "local",
     "session": "/Users/example/.config/herdr/herdr.sock",
-    "workspace_id": "w1W",
-    "tab_id": "w1W:t1",
-    "pane_id": "w1W:p1",
-    "terminal_id": "term_65c77b08d74c745"
+    "active_count": 2,
+    "working_count": 1,
+    "blocked_count": 1,
+    "agents": [
+      {
+        "agent": "codex",
+        "status": "working",
+        "project": "modelcards",
+        "workspace_id": "w1W",
+        "tab_id": "w1W:t1",
+        "pane_id": "w1W:p1",
+        "terminal_id": "term_65c77b08d74c745",
+        "cwd": "/Users/example/workspaces/modelcards",
+        "foreground_cwd": "/Users/example/workspaces/modelcards",
+        "is_focused": true,
+        "execution_mode": "supervised",
+        "is_terminal": false
+      },
+      {
+        "agent": "claude",
+        "status": "blocked",
+        "project": "docs",
+        "workspace_id": "w2D",
+        "tab_id": "w2D:t1",
+        "pane_id": "w2D:p1",
+        "terminal_id": "term_92a34b11f01c823",
+        "cwd": "/Users/example/workspaces/docs",
+        "foreground_cwd": "/Users/example/workspaces/docs",
+        "is_focused": false,
+        "execution_mode": "autonomous",
+        "is_terminal": false
+      }
+    ]
   }
   ```
 

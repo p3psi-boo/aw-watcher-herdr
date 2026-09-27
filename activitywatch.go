@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -78,45 +79,107 @@ func baseData(u Update, p Pane) map[string]any {
 	}
 }
 
+type AgentInfo struct {
+	Agent         string `json:"agent"`
+	Status        string `json:"status"`
+	Project       string `json:"project"`
+	WorkspaceID   string `json:"workspace_id"`
+	TabID         string `json:"tab_id"`
+	PaneID        string `json:"pane_id"`
+	TerminalID    string `json:"terminal_id"`
+	CWD           string `json:"cwd"`
+	ForegroundCWD string `json:"foreground_cwd"`
+	IsFocused     bool   `json:"is_focused"`
+	ExecutionMode string `json:"execution_mode"`
+	IsTerminal    bool   `json:"is_terminal"`
+}
+
 func agentRecords(host string, u Update) []Record {
-	var records []Record
+	var items []AgentInfo
 	for _, p := range u.Snapshot.Panes {
 		if p.Agent == "" {
 			continue
 		}
-		d := baseData(u, p)
-		d["agent"] = p.Agent
-		d["status"] = p.Status
-
+		project := resolveProject(u, p)
 		isFocused := (p.ID == u.Snapshot.FocusedPane)
-		d["is_focused"] = isFocused
+		execMode := "autonomous"
 		if isFocused {
-			d["execution_mode"] = "supervised"
-		} else {
-			d["execution_mode"] = "autonomous"
+			execMode = "supervised"
 		}
-		d["is_terminal"] = (p.Status == "done" || p.Status == "exited" || p.Status == "error")
-
-		project, _ := d["project"].(string)
-		if project == "" {
-			project = "default"
-		}
-		d["title"] = fmt.Sprintf("%s: %s [%s]", p.Agent, p.Status, project)
+		isTerminal := (p.Status == "done" || p.Status == "exited" || p.Status == "error")
 
 		terminal := p.Terminal
 		if terminal == "" {
 			terminal = p.ID
 		}
-		bucket := "aw-watcher-herdr-agent_" + identity(host, u.Machine.ID, u.Machine.Session, terminal)
-		name := fmt.Sprintf("Herdr Agent: %s (%s)", p.Agent, project)
-		records = append(records, Record{
-			Bucket: bucket,
-			Type:   "herdr.agent.status",
-			Data:   d,
-			Name:   name,
+
+		items = append(items, AgentInfo{
+			Agent:         p.Agent,
+			Status:        p.Status,
+			Project:       project,
+			WorkspaceID:   p.Workspace,
+			TabID:         p.Tab,
+			PaneID:        p.ID,
+			TerminalID:    terminal,
+			CWD:           p.CWD,
+			ForegroundCWD: p.ForegroundCWD,
+			IsFocused:     isFocused,
+			ExecutionMode: execMode,
+			IsTerminal:    isTerminal,
 		})
 	}
-	return records
+
+	if len(items) == 0 {
+		return nil
+	}
+
+	// Deterministic sorting by PaneID to ensure reproducible JSON serialization.
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].PaneID < items[j].PaneID
+	})
+
+	workingCount := 0
+	blockedCount := 0
+	for _, it := range items {
+		if it.Status == "working" {
+			workingCount++
+		} else if it.Status == "blocked" {
+			blockedCount++
+		}
+	}
+
+	var title string
+	if len(items) == 1 {
+		title = fmt.Sprintf("%s: %s [%s]", items[0].Agent, items[0].Status, items[0].Project)
+	} else {
+		var parts []string
+		for _, it := range items {
+			parts = append(parts, fmt.Sprintf("%s (%s)", it.Agent, it.Status))
+		}
+		title = fmt.Sprintf("%d agents: %s", len(items), strings.Join(parts, ", "))
+	}
+
+	d := map[string]any{
+		"app":              "Herdr",
+		"title":            title,
+		"machine_id":       u.Machine.ID,
+		"machine":          u.Machine.Label,
+		"session":          u.Machine.Session,
+		"active_count":     len(items),
+		"working_count":    workingCount,
+		"blocked_count":    blockedCount,
+		"agents":           items,
+		"connection_epoch": u.Epoch,
+	}
+
+	bucket := "aw-watcher-herdr-agent_" + identity(host)
+	name := fmt.Sprintf("Herdr Agents (%s)", host)
+	return []Record{{
+		Bucket: bucket,
+		Type:   "herdr.agent.status",
+		Data:   d,
+		Name:   name,
+	}}
 }
 
 func focusRecord(host string, u Update, epoch string) (Record, bool) {
