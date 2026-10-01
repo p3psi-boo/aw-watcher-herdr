@@ -33,7 +33,7 @@
 只需 3 步即可完成编译、环境自检与后台常驻守护安装：
 
 ```sh
-# 1. 编译本地二进制（依赖 Go 1.26+，仅使用标准库，无运行时外部依赖）
+# 1. 编译本地二进制（依赖 Go 1.26+，仅使用 Go 标准库）
 go build -o aw-watcher-herdr .
 
 # 2. 一键环境诊断（自动排查 Herdr CLI、Unix Socket、ActivityWatch API 及守护服务）
@@ -48,6 +48,26 @@ go build -o aw-watcher-herdr .
 ```sh
 ./aw-watcher-herdr service status
 ```
+
+---
+
+## 使用 Nix 进入开发环境。
+
+`flake.nix` 从 `nixos-unstable` 声明 Go 1.26 开发依赖，`flake.lock` 固定实际使用的 Nixpkgs 版本。开发环境覆盖 macOS aarch64，以及 Linux aarch64、x86_64 平台。`GOTOOLCHAIN=local` 禁止 Go 自动下载其他工具链，使编译使用 Nix 提供的 Go。
+
+安装 Nix 并启用 `nix-command`、`flakes` 后，在仓库根目录运行：
+
+```sh
+nix develop
+go test ./...
+go build -o aw-watcher-herdr .
+```
+
+编译结果保存在仓库根目录的 `aw-watcher-herdr`。也可以直接运行 `nix develop -c go test ./...`，无需进入交互式终端。命令行为参见 [Nix 官方开发环境文档](https://wiki.nixos.org/wiki/Development_environment_with_nix-shell)。
+
+开发环境仅提供编译和测试依赖。实际采集仍需主机上的 Herdr CLI、运行中的 Herdr 和 ActivityWatch；服务管理使用主机的 LaunchAgent 或 systemd。
+
+需要更新依赖版本时，运行 `nix flake update nixpkgs`，并将更新后的 `flake.lock` 与 `flake.nix` 一起提交。
 
 ---
 
